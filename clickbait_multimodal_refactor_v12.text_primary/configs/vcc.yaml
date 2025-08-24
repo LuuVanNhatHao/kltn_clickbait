@@ -2,7 +2,7 @@ dataset:
   name: vcc
   artifacts_dir: artifacts
   train: data/vcc/train.csv
-  dev: data/vcc/dev.csv
+  dev: data/vcc/val.csv
   test: data/vcc/test.csv
 
 columns:
