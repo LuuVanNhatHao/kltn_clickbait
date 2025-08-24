@@ -2,7 +2,7 @@ dataset:
   name: cldi
   artifacts_dir: artifacts
   train: data/cldi/train.csv
-  dev: data/cldi/dev.csv
+  dev: data/cldi/val.csv
   test: data/cldi/test.csv
 
 columns:
