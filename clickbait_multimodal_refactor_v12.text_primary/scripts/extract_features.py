@@ -2,7 +2,7 @@ import argparse, yaml, os, json, numpy as np, pandas as pd
 from pathlib import Path
 from src.data.datasets import DatasetAdapter, ColumnMap
 from src.features.text_encoder import HFTextEncoder
-from src.features.image_encoder import EfficientNetEncoder, MultiImageEncoder  # ✅ thêm MultiImageEncoder
+from src.features.image_encoder import EfficientNetEncoder
 from src.features.clip_encoder import CLIPTextEncoder, CLIPImageEncoder
 from tqdm.auto import tqdm
 
