@@ -4,12 +4,17 @@ import json
 from typing import Dict, Tuple
 import numpy as np
 
-import optuna
+try:
+    import optuna
+    _HAS_OPTUNA = True
+except Exception:
+    _HAS_OPTUNA = False
+
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score, f1_score
 
-from src.models.heads import build_base, predict_proba
-from src.utils.metrics import tune_threshold
+from ..models.heads import build_base, predict_proba
+from ..utils.metrics import tune_threshold
 
 DEFAULT_TRIALS = 30
 
@@ -18,13 +23,12 @@ def _nan_to_num(x: np.ndarray) -> np.ndarray:
 
 def _space(trial, name: str) -> Dict:
     name = name.lower()
-    if name in ("lr", "logreg", "logistic_regression"):
+    if name in ("lr","logreg","logistic_regression"):
         return {"C": trial.suggest_float("C", 1e-3, 1e2, log=True),
                 "solver": trial.suggest_categorical("solver", ["liblinear","lbfgs"]),
                 "max_iter": 1000, "class_weight": "balanced", "n_jobs": -1}
     if name in ("svm","svm_linear","svc"):
-        return {"C": trial.suggest_float("C", 1e-3, 1e2, log=True),
-                "max_iter": 5000, "class_weight": "balanced"}
+        return {"C": trial.suggest_float("C", 1e-3, 1e2, log=True), "max_iter": 5000, "class_weight": "balanced"}
     if name in ("knn",):
         return {"n_neighbors": trial.suggest_int("n_neighbors", 3, 101, step=2),
                 "weights": trial.suggest_categorical("weights", ["uniform","distance"]),
@@ -39,43 +43,37 @@ def _space(trial, name: str) -> Dict:
                 "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
                 "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
                 "reg_alpha": trial.suggest_float("reg_alpha", 1e-6, 1.0, log=True),
-                "tree_method": "gpu_hist", "predictor": "gpu_predictor", "eval_metric":"auc"}
+                "tree_method": "gpu_hist", "predictor": "gpu_predictor", "eval_metric": "auc"}
     if name in ("mlp","mlp_torch","mlp_sklearn"):
-        return {"hidden_layer_sizes": trial.suggest_categorical("hidden_layer_sizes",
-                    [(128,), (256,), (256,128), (256,128,64)]),
-                "alpha": trial.suggest_float("alpha", 1e-5, 1e-2, log=True),
-                "learning_rate_init": trial.suggest_float("learning_rate_init", 1e-4, 5e-3, log=True),
-                "max_iter": trial.suggest_int("max_iter", 120, 300)}
+        return {"hidden": trial.suggest_categorical("hidden", [(256,128),(256,128,64),(512,256)]),
+                "dropout": trial.suggest_float("dropout", 0.0, 0.5),
+                "lr": trial.suggest_float("lr", 1e-4, 1e-2, log=True),
+                "epochs": trial.suggest_int("epochs", 10, 40),
+                "batch_size": trial.suggest_categorical("batch_size", [128,256,512])}
     return {}
 
 def tune_base(name: str, X: np.ndarray, y: np.ndarray, n_trials: int = DEFAULT_TRIALS,
              cv_folds: int = 5, random_state: int = 42, objective: str = "auc") -> Tuple[Dict, float]:
-    """
-    Optuna cho 1 base learner.
-    - objective="auc" (khuyên dùng) hoặc "f1" (tune thr per-fold).
-    """
+    if not _HAS_OPTUNA:
+        raise RuntimeError("Optuna is not installed.")
     X = np.asarray(X, dtype=np.float32)
     y = np.asarray(y, dtype=int).reshape(-1)
-
     skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
     objective = (objective or "auc").lower()
 
     def _fold_score(params: Dict) -> float:
         scores = []
         for tr, va in skf.split(X, y):
-            clf = build_base(name, params)
-            clf.fit(X[tr], y[tr])
-            prob = predict_proba(clf, X[va])
-            prob = _nan_to_num(prob)
+            model = build_base(name, params)
+            model.fit(X[tr], y[tr])
+            prob = _nan_to_num(predict_proba(model, X[va]))
             if objective == "auc":
-                try:
-                    scores.append(float(roc_auc_score(y[va], prob)))
-                except Exception:
-                    scores.append(0.0)
+                try: score = roc_auc_score(y[va], prob)
+                except Exception: score = 0.0
             else:
                 thr, _ = tune_threshold(y[va], prob, metric="f1")
-                pred = (prob >= thr).astype(int)
-                scores.append(float(f1_score(y[va], pred, zero_division=0)))
+                score = f1_score(y[va], (prob >= thr).astype(int), zero_division=0)
+            scores.append(float(score))
         return float(np.mean(scores)) if scores else 0.0
 
     def _objective(trial):

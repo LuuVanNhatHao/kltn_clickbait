@@ -12,20 +12,20 @@ from src.utils.seed import set_seed
 
 def load_feats(artifacts_dir, dataset_name, split):
     base = Path(artifacts_dir) / dataset_name / split
-    if not base.exists(): raise FileNotFoundError(f"Split not found: {base}")
+    if not base.exists():
+        raise FileNotFoundError(f"Split folder not found: {base}")
     y = np.load(base/"y.npy") if (base/"y.npy").exists() else None
     feats = {}
     for npy in sorted(base.glob("X_*.npy")):
-        key = npy.stem.replace("X_","")
+        key = npy.stem.replace("X_", "")
         arr = np.load(npy)
-        if arr.ndim == 1: arr = arr[:, None]
-        feats[key] = arr.astype(np.float32)
-    if not feats: raise RuntimeError(f"No X_*.npy under {base}")
+        feats[key] = (arr[:, None] if arr.ndim == 1 else arr).astype(np.float32)
+    if not feats:
+        raise RuntimeError(f"No X_*.npy under {base}")
     return y, feats
 
 def build_tasks(dataset_name: str, feats: dict) -> dict:
-    tasks = {}
-    ds = dataset_name.lower()
+    tasks, ds = {}, dataset_name.lower()
     if 'text' in feats: tasks['text_only'] = feats['text']
     if 'caption' in feats: tasks['caption_only'] = feats['caption']
     if 'text' in feats and 'caption' in feats and ds in ['vcc','wcc']:
@@ -43,11 +43,11 @@ def intersect_task_names(tasks_tr, tasks_dv, tasks_te):
     if tasks_te is not None: names &= set(tasks_te.keys())
     return sorted(names)
 
-def train_and_eval_single_task(Xtr, ytr, Xdv, ydv, Xte, yte,
-                               base_learners, meta_learner, cv_folds,
-                               threshold_metric="f1", do_optuna=False,
-                               optuna_trials=0, optuna_objective="auc",
-                               outdir: Path | None = None, seed: int = 42):
+def train_and_eval_single_task(
+    Xtr, ytr, Xdv, ydv, Xte, yte, base_learners, meta_learner, cv_folds,
+    threshold_metric="f1", do_optuna=False, optuna_trials=0, optuna_objective="auc",
+    outdir: Path | None = None, seed: int = 42
+):
     ensure_dir(outdir) if outdir is not None else None
     base_params = {}
     if do_optuna and optuna_trials > 0:
@@ -57,12 +57,16 @@ def train_and_eval_single_task(Xtr, ytr, Xdv, ydv, Xte, yte,
                                      objective=optuna_objective)
             base_params[name] = params
             if outdir is not None:
-                (outdir / "optuna").mkdir(parents=True, exist_ok=True)
+                (outdir/"optuna").mkdir(parents=True, exist_ok=True)
                 save_params(str(outdir/"optuna"/f"{name}.json"), params)
 
-    model = StackingOOF(base_names=base_learners, base_params=base_params,
-                        meta_learner=meta_learner, cv_folds=cv_folds,
-                        random_state=seed)
+    model = StackingOOF(
+        base_names=base_learners,
+        base_params=base_params,
+        meta_learner=meta_learner,
+        cv_folds=cv_folds,
+        random_state=seed
+    )
     model.fit(Xtr, ytr)
 
     prob_tr = model.predict_proba(Xtr)
@@ -76,24 +80,22 @@ def train_and_eval_single_task(Xtr, ytr, Xdv, ydv, Xte, yte,
         pred = (prob >= thr).astype(int)
         return {
             "report": classification_report(y, pred, digits=4, output_dict=True),
-            "metrics": {**compute_all(y, prob, thr=thr), "best_thr": float(thr)}
+            "metrics": {**compute_all(y, prob, thr=thr), "best_thr_metric": threshold_metric}
         }
 
-    res = {"train": pack(ytr, prob_tr), "dev": pack(ydv, prob_dv),
-           "test": pack(yte, prob_te), "threshold": float(thr)}
+    res = {"train": pack(ytr, prob_tr), "dev": pack(ydv, prob_dv), "test": pack(yte, prob_te), "threshold": float(thr)}
 
     if outdir is not None:
-        preds_dir = outdir / "preds"; ensure_dir(preds_dir)
-        pd.DataFrame({"prob": prob_tr, "pred": (prob_tr>=thr).astype(int), "label": ytr}).to_csv(preds_dir/"train.csv", index=False)
+        preds_dir, models_dir = outdir/"preds", outdir/"models"
+        ensure_dir(preds_dir); ensure_dir(models_dir)
+        import joblib
+        joblib.dump(model, models_dir/"stacking.joblib")
+        (models_dir/"best_threshold.txt").write_text(str(float(thr)), encoding="utf-8")
         pd.DataFrame({"prob": prob_dv, "pred": (prob_dv>=thr).astype(int), "label": ydv}).to_csv(preds_dir/"dev.csv", index=False)
         if prob_te is not None:
             d = {"prob": prob_te, "pred": (prob_te>=thr).astype(int)}
             if yte is not None: d["label"] = yte
             pd.DataFrame(d).to_csv(preds_dir/"test.csv", index=False)
-        import joblib
-        models_dir = outdir / "models"; ensure_dir(models_dir)
-        joblib.dump(model, models_dir/"stacking.joblib")
-        with open(models_dir/"best_threshold.txt","w",encoding="utf-8") as f: f.write(str(float(thr)))
     return res
 
 def main():
@@ -105,7 +107,8 @@ def main():
     args = parser.parse_args()
 
     cfg = yaml.safe_load(open(args.config, "r", encoding="utf-8"))
-    ds = cfg['dataset']['name']; art = cfg['dataset'].get('artifacts_dir','artifacts')
+    ds = cfg['dataset']['name']
+    art = cfg['dataset'].get('artifacts_dir','artifacts')
     base_learners = [x.strip() for x in cfg['models']['base_learners']]
     meta_learner = cfg['models']['stacking'].get('meta','logreg')
     cv_folds = int(cfg.get('runtime', {}).get('cv_folds', 5))
@@ -115,8 +118,10 @@ def main():
 
     y_tr, feats_tr = load_feats(art, ds, 'train')
     y_dv, feats_dv = load_feats(art, ds, 'dev')
-    try: y_te, feats_te = load_feats(art, ds, 'test')
-    except Exception: y_te, feats_te = None, None
+    try:
+        y_te, feats_te = load_feats(art, ds, 'test')
+    except Exception:
+        y_te, feats_te = None, None
 
     tasks_tr = build_tasks(ds, feats_tr)
     tasks_dv = build_tasks(ds, feats_dv)
@@ -124,14 +129,18 @@ def main():
 
     if args.task == "all":
         to_run = intersect_task_names(tasks_tr, tasks_dv, tasks_te)
-        if not to_run: raise RuntimeError("No common tasks across splits.")
+        if not to_run:
+            raise RuntimeError("No common tasks across splits.")
     else:
-        to_run = [args.task]
-        missing = set(to_run) - set(intersect_task_names(tasks_tr, tasks_dv, tasks_te))
-        if missing: raise RuntimeError(f"Requested task(s) not available: {missing}")
+        need = [args.task]
+        common = intersect_task_names(tasks_tr, tasks_dv, tasks_te)
+        if set(need) - set(common):
+            raise RuntimeError(f"Requested task(s) not available across splits: {set(need)-set(common)}")
+        to_run = need
 
     results = {}
-    out_root = Path(art)/ds/"results"; ensure_dir(out_root)
+    out_root = Path(art)/ds/"results"
+    ensure_dir(out_root)
 
     for t in tqdm(to_run, desc="Tasks"):
         Xtr, Xdv = tasks_tr[t], tasks_dv[t]
@@ -143,7 +152,8 @@ def main():
             do_optuna=(args.optuna_trials>0),
             optuna_trials=args.optuna_trials,
             optuna_objective=args.optuna_objective,
-            outdir=out_root/t, seed=seed
+            outdir=out_root/t,
+            seed=seed
         )
         results[t] = res
         with open(out_root/t/"metrics.json","w",encoding="utf-8") as f:

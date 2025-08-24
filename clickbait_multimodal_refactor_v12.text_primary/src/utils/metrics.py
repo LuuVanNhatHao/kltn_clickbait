@@ -27,16 +27,15 @@ def compute_all(y_true, y_prob, thr: float = 0.5) -> dict:
         "mcc": float(matthews_corrcoef(y_true, y_pred)) if len(np.unique(y_true))>1 else float("nan"),
         "thr": float(thr),
     }
-    try:
-        out["auc"] = float(roc_auc_score(y_true, y_prob))
-    except Exception:
-        out["auc"] = float("nan")
+    try: out["auc"] = float(roc_auc_score(y_true, y_prob))
+    except Exception: out["auc"] = float("nan")
     return out
 
 def tune_threshold(y_true, y_prob, metric: str = "f1", grid=None):
     y_true = np.asarray(y_true).astype(int).reshape(-1)
     y_prob = _prob_to_1d(y_prob)
-    if grid is None: grid = np.linspace(0.05, 0.95, 181)
+    if grid is None:
+        grid = np.linspace(0.05, 0.95, 181)
     metric = (metric or "f1").lower()
     best_thr, best_val = 0.5, -1.0
     for t in grid:
@@ -56,6 +55,5 @@ def tune_threshold(y_true, y_prob, metric: str = "f1", grid=None):
             except Exception: val = -1.0
         else:
             val = f1_score(y_true, y_pred, zero_division=0)
-        if val > best_val:
-            best_val, best_thr = float(val), float(t)
+        if val > best_val: best_val, best_thr = float(val), float(t)
     return best_thr, best_val
