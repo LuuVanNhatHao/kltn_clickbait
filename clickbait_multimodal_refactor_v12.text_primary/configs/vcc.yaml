@@ -2,7 +2,7 @@ dataset:
   name: vcc
   artifacts_dir: artifacts
   train: data/vcc/train.csv
-  dev: data/vcc/val.csv
+  dev: data/vcc/dev.csv
   test: data/vcc/test.csv
 
 columns:
@@ -27,7 +27,7 @@ caption_encoder:
 image_encoder:
   enabled: true
   name: "tf_efficientnet_b4"
-  root: "images"
+  root: "data/images"
   image_size: 380
 
 clip:
@@ -35,7 +35,7 @@ clip:
   name: "ViT-B-32"
   text_enabled: true
   image_enabled: true
-  root: "images"
+  root: "data/images"
 
 precomputed:
   enabled: false

@@ -2,7 +2,7 @@ dataset:
   name: wcc
   artifacts_dir: artifacts
   train: data/wcc/train.csv
-  dev: data/wcc/val.csv
+  dev: data/wcc/dev.csv
   test: data/wcc/test.csv
 
 columns:
@@ -26,7 +26,7 @@ caption_encoder:
 image_encoder:
   enabled: true
   name: "tf_efficientnet_b4"
-  root: "media"
+  root: "ata/media"
   image_size: 380
 
 clip:
@@ -34,7 +34,7 @@ clip:
   name: "ViT-B-32"
   text_enabled: true
   image_enabled: true
-  root: "media"
+  root: "ata/media"
 
 precomputed:
   enabled: false
