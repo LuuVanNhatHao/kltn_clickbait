@@ -2,14 +2,15 @@ dataset:
   name: wcc
   artifacts_dir: artifacts
   train: data/wcc/train.csv
-  dev: data/wcc/dev.csv
-  test: data/wcc/test.csv
+  dev:   data/wcc/dev.csv
+  test:  data/wcc/test.csv
+  image_root: data/media      # ảnh WCC nằm trong data/media
 
 columns:
   text: "postText"
   caption: "caption_en"
   label: "truthClass"
-  claim_image: "img_path"
+  claim_image: "img_path"     # tên file/đường dẫn con dưới image_root
 
 text_encoder:
   enabled: true
@@ -26,15 +27,15 @@ caption_encoder:
 image_encoder:
   enabled: true
   name: "tf_efficientnet_b4"
-  root: "ata/media"
+  root: "data/media"          # (tuỳ chọn, mặc định dùng dataset.image_root)
   image_size: 380
 
 clip:
   enabled: true
-  name: "ViT-B-32"
+  name: "openclip_ViT-B-32"   # hoặc "openai/clip-vit-base-patch32"
   text_enabled: true
   image_enabled: true
-  root: "ata/media"
+  root: "data/media"
 
 precomputed:
   enabled: false
@@ -45,12 +46,11 @@ runtime:
   cv_folds: 5
 
 models:
-  base_learners: ["lr","svm_linear","random_forest","gbdt","extra_trees","mlp"]
+  base_learners: ["lr","svm_linear","rf","gbdt","extratrees","mlp"]
   stacking:
     enabled: true
     meta: "logreg"
 
-
 fusion:
-  primary: text  # caption/image act as support
+  primary: text
   strategy: concat
