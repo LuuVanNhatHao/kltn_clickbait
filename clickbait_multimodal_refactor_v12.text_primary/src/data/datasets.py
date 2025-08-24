@@ -15,28 +15,28 @@ class ColumnMap:
     caption: Optional[str] = None
 
 class DatasetAdapter:
-    def __init__(self, csv_path: str, column_map: ColumnMap, image_root: Optional[str]=None, dataset_name: Optional[str]=None):
-        self.csv_path = csv_path
-        self.df = pd.read_csv(csv_path)
+    def __init__(self, csv_path, column_map, cfg):
         self.cm = column_map
-        self.image_root = image_root
-        self.dataset_name = (dataset_name or "").lower()
+        self.cfg = cfg or {}
+        self.df = pd.read_csv(csv_path)
+        # chuẩn hoá label -> 0/1 (đoạn bạn đã dán trước đó giữ nguyên)
 
-        # Normalize labels per dataset
-        if self.cm.label not in self.df.columns:
-            raise ValueError(f"Label column '{self.cm.label}' not found in {csv_path}")
+        # ---- xác định image_root từ image_encoder hoặc clip ----
+        img_root = None
+        if isinstance(self.cfg.get("image_encoder"), dict):
+            img_root = self.cfg["image_encoder"].get("root")
+        if not img_root and isinstance(self.cfg.get("clip"), dict):
+            img_root = self.cfg["clip"].get("root")
+        self.image_root = img_root  # string hoặc None
+
+        # ---- map label ----
         self.y = self._normalize_labels(self.df[self.cm.label].values)
 
-        # Normalize text/caption fields that might be stored as JSON-like lists
-        if self.cm.text and self.cm.text in self.df.columns:
-            self.df[self.cm.text] = self.df[self.cm.text].apply(self._first_from_listlike)
-        if self.cm.caption and self.cm.caption in self.df.columns:
-            self.df[self.cm.caption] = self.df[self.cm.caption].apply(self._first_from_listlike)
+        # ---- chuẩn hoá cột ảnh (nếu có) ----
+        img_col = self.cm.claim_image
+        if img_col and img_col in self.df.columns:
+            self.df[img_col] = self.df[img_col].apply(self._resolve_image_path)
 
-        # Resolve image paths if present
-        for img_col in [self.cm.claim_image, self.cm.document_image]:
-            if img_col and img_col in self.df.columns:
-                self.df[img_col] = self.df[img_col].apply(lambda p: self._resolve_image_path(p))
 
     def _first_from_listlike(self, x):
         # WCC sometimes stores lists as strings like "['text']"
@@ -51,21 +51,54 @@ class DatasetAdapter:
                 pass
         return x if isinstance(x, str) else str(x)
 
-    def _resolve_image_path(self, p: Any) -> str:
-        if pd.isna(p):
-            return ""
-        p = str(p)
-        if self.image_root and not os.path.isabs(p):
-            # Handle cases where column is "['media/xxx.jpg']"
-            if p.startswith('[') and p.endswith(']'):
+    def _resolve_image_path(self, p):
+        """
+        Chuẩn hoá path ảnh:
+        - Hỗ trợ: str, list/tuple (lấy phần tử đầu), chuỗi dạng "['...']" từ CSV.
+        - Nếu relative và có image_root -> join vào.
+        - Nếu NaN/None -> trả None.
+        """
+        if p is None or (isinstance(p, float) and np.isnan(p)):
+            return None
+
+        # list/tuple
+        if isinstance(p, (list, tuple)):
+            p = p[0] if len(p) > 0 else None
+            if p is None:
+                return None
+
+        # chuỗi
+        if isinstance(p, str):
+            s = p.strip()
+
+            # Nếu string trông như list JSON/py: "['media/a.jpg']" -> parse
+            if (s.startswith("[") and s.endswith("]")) or (s.startswith("(") and s.endswith(")")):
                 try:
-                    arr = ast.literal_eval(p)
-                    if isinstance(arr, list) and arr:
-                        p = arr[0]
+                    val = ast.literal_eval(s)
+                    if isinstance(val, (list, tuple)) and len(val) > 0:
+                        s = str(val[0])
                 except Exception:
-                    pass
-            p = os.path.join(self.image_root, p) if not p.startswith(self.image_root) else p
-        return p
+                    # fallback: cố bóc ký tự rác
+                    s = re.sub(r"^[\[\(\s'\" ]+|[\]\)\s'\" ]+$", "", s)
+
+            # bóc quote
+            s = s.strip().strip("'").strip('"')
+
+            # nếu có image_root và s chưa chứa root thì join
+            if self.image_root and isinstance(self.image_root, str):
+                # chuẩn hoá để so sánh
+                root_norm = os.path.normpath(self.image_root)
+                s_norm = os.path.normpath(s)
+                if not s_norm.startswith(root_norm) and not os.path.isabs(s_norm):
+                    s = os.path.join(self.image_root, s)
+
+            return os.path.normpath(s)
+
+        # loại còn lại -> cast str
+        s = str(p)
+        if self.image_root and isinstance(self.image_root, str):
+            return os.path.normpath(os.path.join(self.image_root, s))
+        return os.path.normpath(s)
 
     def _normalize_labels(self, y):
         """
