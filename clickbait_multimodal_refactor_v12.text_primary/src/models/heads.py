@@ -181,14 +181,31 @@ def build_base(name: str, params: Optional[Dict] = None):
                 kernel=params.get("kernel", "linear"),
                 probability=True,
             )
-        # CPU fallback: LinearSVC + Calibrated prob
+
+        # Nếu muốn kernel khác linear → dùng SVC(probability=True) để khỏi calibrate
+        kernel = params.get("kernel", "linear")
+        if kernel != "linear" or name == "svc":
+            svc = SVC(
+                kernel=kernel,
+                C=params.get("C", 1.0),
+                probability=True,
+                class_weight=params.get("class_weight", "balanced"),
+            )
+            return make_pipeline(_std(False), svc)
+
+        # Linear SVM + calibration (để có prob)
         base = LinearSVC(
             C=params.get("C", 1.0),
             class_weight=params.get("class_weight", "balanced"),
             dual=params.get("dual", "auto"),
             max_iter=params.get("max_iter", 5000),
         )
-        calibrated = CalibratedClassifierCV(base_estimator=base, method="sigmoid", cv=5)
+        # NOTE: sklearn >=1.4 dùng 'estimator'; bản cũ dùng 'base_estimator'
+        try:
+            calibrated = CalibratedClassifierCV(estimator=base, method="sigmoid", cv=5)
+        except TypeError:
+            calibrated = CalibratedClassifierCV(base_estimator=base, method="sigmoid", cv=5)
+
         return make_pipeline(_std(False), calibrated)
 
     # ---- KNN ----
