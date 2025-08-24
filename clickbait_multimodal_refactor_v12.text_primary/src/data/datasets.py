@@ -68,27 +68,61 @@ class DatasetAdapter:
         return p
 
     def _normalize_labels(self, y):
-        # Convert to {non-clickbait:0, clickbait:1} for VCC/WCC; leave ints for CLDI
-        if self.dataset_name in ["vcc", "wcc"]:
-            y_norm = []
-            for v in y:
-                if isinstance(v, str):
-                    vs = v.strip().lower()
-                    if "clickbait" in vs and "non" not in vs:
-                        y_norm.append(1)
-                    elif "non" in vs or "not" in vs:
-                        y_norm.append(0)
-                    else:
-                        # fallback: try cast
-                        try:
-                            y_norm.append(int(float(v)))
-                        except Exception:
-                            y_norm.append(0)
-                else:
-                    y_norm.append(int(v))
-            return np.array(y_norm, dtype=np.int64)
-        # CLDI already has 0/1 in Clickbait
-        return np.array(y, dtype=np.int64)
+        """
+        Chuẩn hoá nhãn về {0,1}:
+          - Hỗ trợ chuỗi: clickbait / non-clickbait / no-clickbait (mọi kiểu viết, có/không gạch nối/khoảng trắng)
+          - Hỗ trợ số: 0/1, "0"/"1", 0.0/1.0
+          - Nếu gặp giá trị lạ -> raise lỗi gợi ý.
+        """
+        import re
+        import numpy as np
+
+        pos_set = {
+            "clickbait", "cb", "bait", "yes", "true", "1"
+        }
+        neg_set = {
+            "nonclickbait", "noclickbait", "no-clickbait", "non-clickbait", "nocb",
+            "noncb", "nobait", "no", "false", "0"
+        }
+
+        out = []
+        for v in y:
+            # số nguyên
+            if isinstance(v, (int, np.integer)):
+                out.append(1 if int(v) != 0 else 0)
+                continue
+            # số thực
+            if isinstance(v, (float, np.floating)):
+                out.append(1 if float(v) >= 0.5 else 0)
+                continue
+            # chuỗi
+            if isinstance(v, str):
+                s = v.strip().lower()
+                # bỏ khoảng trắng/gạch nối/gạch dưới để gom các biến thể: "non-clickbait" -> "nonclickbait"
+                s_clean = re.sub(r"[\s\-_]+", "", s)
+
+                if s_clean in pos_set:
+                    out.append(1)
+                    continue
+                if s_clean in neg_set:
+                    out.append(0)
+                    continue
+                # Thử parse số trong chuỗi
+                try:
+                    f = float(s)
+                    out.append(1 if f >= 0.5 else 0)
+                    continue
+                except Exception:
+                    pass
+
+                raise ValueError(
+                    f"Unrecognized label '{v}'. Expected one of {sorted(list(pos_set | neg_set))} or numeric 0/1."
+                )
+
+            # kiểu khác không hỗ trợ
+            raise ValueError(f"Unsupported label type: {type(v)} with value={v}")
+
+        return np.array(out, dtype=np.int64)
 
     def labels(self) -> np.ndarray:
         return self.y
