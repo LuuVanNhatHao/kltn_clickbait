@@ -91,7 +91,11 @@ def train_and_eval_single_task(
 
     if do_optuna and optuna_trials > 0:
         for name in tqdm(base_learners, desc="Optuna (per base)", leave=False):
-            params, best = tune_base(name, Xtr, ytr, n_trials=optuna_trials, cv_folds=cv_folds, random_state=seed)
+            params, best = tune_base(name, Xtr, ytr,
+                                     n_trials=optuna_trials,
+                                     cv_folds=cv_folds,
+                                     random_state=seed,
+                                     objective="f1")
             base_params[name] = params
             if outdir is not None:
                 (outdir / "optuna").mkdir(parents=True, exist_ok=True)
