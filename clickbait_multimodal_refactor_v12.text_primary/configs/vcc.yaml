@@ -1,0 +1,57 @@
+dataset:
+  name: vcc
+  artifacts_dir: artifacts
+  train: data/vcc/train.csv
+  dev: data/vcc/dev.csv
+  test: data/vcc/test.csv
+
+columns:
+  text: "title"        # main Vietnamese title
+  caption: "caption_vi"
+  label: "label"
+  claim_image: "thumbnail_url"   # column that stores image path under images/
+  # document_image: null
+
+text_encoder:
+  enabled: true
+  name: "vinai/phobert-large"
+  max_length: 128
+  batch_size: 16
+
+caption_encoder:
+  enabled: true
+  name: "vinai/phobert-large"
+  max_length: 64
+  batch_size: 16
+
+image_encoder:
+  enabled: true
+  name: "tf_efficientnet_b4"
+  root: "images"
+  image_size: 380
+
+clip:
+  enabled: true
+  name: "ViT-B-32"
+  text_enabled: true
+  image_enabled: true
+  root: "images"
+
+precomputed:
+  enabled: false
+
+runtime:
+  device: "auto"
+  seed: 42
+  cv_folds: 5
+
+models:
+  base_learners: ["lr","svm_linear","random_forest","gbdt","extra_trees","mlp"]
+  stacking:
+    enabled: true
+    meta: "logreg"
+
+
+fusion:
+  primary: text  # caption/image act as support
+  strategy: concat

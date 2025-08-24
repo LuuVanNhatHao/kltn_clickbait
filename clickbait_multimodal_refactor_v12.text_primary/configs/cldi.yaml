@@ -1,0 +1,48 @@
+dataset:
+  name: cldi
+  artifacts_dir: artifacts
+  train: data/cldi/train.csv
+  dev: data/cldi/dev.csv
+  test: data/cldi/test.csv
+
+columns:
+  # CLDI: no generated caption; textual fields are Captions (title) and Hashtags
+  text_fields: ["Captions", "Hashtags"]
+  label: "Clickbait"
+  # No raw images; only precomputed image features 0..2047 present in CSV
+  # If there is an img path column, you can add claim_image/document_image, but default is None
+
+text_encoder:
+  enabled: true
+  name: "xlm-roberta-large"
+  max_length: 128
+  batch_size: 16
+
+caption_encoder:
+  enabled: false
+
+image_encoder:
+  enabled: false
+
+clip:
+  enabled: false
+
+precomputed:
+  enabled: true
+  image_range: [0, 2047]
+
+runtime:
+  device: "auto"
+  seed: 42
+  cv_folds: 5
+
+models:
+  base_learners: ["lr","svm_linear","random_forest","gbdt","extra_trees","mlp"]
+  stacking:
+    enabled: true
+    meta: "logreg"
+
+
+fusion:
+  primary: text  # caption/image act as support
+  strategy: concat

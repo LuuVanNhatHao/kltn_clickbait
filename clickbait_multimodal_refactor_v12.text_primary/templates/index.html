@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Clickbait Multimodal Demo</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 30px; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; max-width: 640px; }
+    input, textarea { width: 100%; padding: 8px; margin: 6px 0; }
+    button { padding: 10px 16px; border-radius: 8px; }
+    .result { margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h2>Clickbait Multimodal — Unified Pipeline Demo</h2>
+  <div class="card">
+    <label>Text</label>
+    <textarea id="text" rows="4" placeholder="Enter teaser/headline..."></textarea>
+    <label>Image path (optional, local file path)</label>
+    <input id="image_path" placeholder="e.g., data/CLDI/images/sample.jpg"/>
+    <button onclick="predict()">Predict</button>
+    <div class="result" id="result"></div>
+  </div>
+  <script>
+    async function predict(){
+      const text = document.getElementById('text').value;
+      const image_path = document.getElementById('image_path').value;
+      const res = await fetch('/api/predict', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text, image_path})
+      });
+      const data = await res.json();
+      document.getElementById('result').innerHTML = 
+        `<b>Pred:</b> ${data.pred} &nbsp; <b>Prob:</b> ${data.prob.toFixed(4)} &nbsp; <b>Thr:</b> ${data.threshold}`;
+    }
+  </script>
+</body>
+</html>

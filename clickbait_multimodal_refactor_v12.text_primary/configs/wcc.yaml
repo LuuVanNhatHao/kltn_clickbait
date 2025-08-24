@@ -1,0 +1,56 @@
+dataset:
+  name: wcc
+  artifacts_dir: artifacts
+  train: data/wcc/train.csv
+  dev: data/wcc/dev.csv
+  test: data/wcc/test.csv
+
+columns:
+  text: "postText"
+  caption: "caption_en"
+  label: "truthClass"
+  claim_image: "img_path"
+
+text_encoder:
+  enabled: true
+  name: "roberta-large"
+  max_length: 128
+  batch_size: 16
+
+caption_encoder:
+  enabled: true
+  name: "roberta-large"
+  max_length: 64
+  batch_size: 16
+
+image_encoder:
+  enabled: true
+  name: "tf_efficientnet_b4"
+  root: "media"
+  image_size: 380
+
+clip:
+  enabled: true
+  name: "ViT-B-32"
+  text_enabled: true
+  image_enabled: true
+  root: "media"
+
+precomputed:
+  enabled: false
+
+runtime:
+  device: "auto"
+  seed: 42
+  cv_folds: 5
+
+models:
+  base_learners: ["lr","svm_linear","random_forest","gbdt","extra_trees","mlp"]
+  stacking:
+    enabled: true
+    meta: "logreg"
+
+
+fusion:
+  primary: text  # caption/image act as support
+  strategy: concat
