@@ -10,7 +10,7 @@ columns:
   text: "title"
   caption: "caption_vi"
   label: "label"
-  claim_image: "thumbnail_url"   # tên file/đường dẫn con dưới image_root
+  claim_image: "thumbnail_url"   # có thể là 'data/images/xxx.jpg' (đã được resolver xử lý)
 
 text_encoder:
   enabled: true
@@ -27,12 +27,13 @@ caption_encoder:
 image_encoder:
   enabled: true
   name: "tf_efficientnet_b4"
-  root: "data/images"      # (tuỳ chọn, mặc định dùng dataset.image_root)
+  root: "data/images"      # resolver sẽ tự thử ., .., ../.. và root này
   image_size: 380
 
 clip:
   enabled: true
-  name: "openclip_ViT-B-32"   # hoặc "openai/clip-vit-base-patch32"
+  # Dùng open-clip (tên model đúng là 'ViT-B-32'); pretrained mặc định trong code: laion2b_s34b_b79k
+  name: "ViT-B-32"
   text_enabled: true
   image_enabled: true
   root: "data/images"
@@ -41,16 +42,19 @@ precomputed:
   enabled: false
 
 runtime:
-  device: "auto"
+  device: "auto"           # auto → CUDA nếu có
   seed: 42
   cv_folds: 5
 
 models:
-  base_learners: ["lr","svm_linear","rf","gbdt","extratrees","mlp"]
+  # 6 mô hình bạn yêu cầu
+  base_learners: ["knn","svm","xgb","nb","lr","mlp"]
   stacking:
     enabled: true
-    meta: "logreg"
+    meta: "logreg"         # meta-learner trên CPU (sklearn)
+  # (tuỳ chọn) nếu muốn đặt metric tune-threshold khác F1, thêm:
+  # threshold_metric: "f1"
 
 fusion:
-  primary: text    # text là chủ đạo; caption/image là support
+  primary: text            # text là chủ đạo; caption/image hỗ trợ
   strategy: concat

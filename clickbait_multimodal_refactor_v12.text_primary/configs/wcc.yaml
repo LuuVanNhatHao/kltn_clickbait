@@ -10,7 +10,7 @@ columns:
   text: "postText"
   caption: "caption_en"
   label: "truthClass"
-  claim_image: "img_path"     # tên file/đường dẫn con dưới image_root
+  claim_image: "postMedia"     # tên file/đường dẫn con dưới image_root
 
 text_encoder:
   enabled: true
