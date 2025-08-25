@@ -13,7 +13,6 @@ except Exception:
 
 _HAS_CUML = False
 try:
-    # RAPIDS cuML (nếu đã cài): SVM/KNN/NB/LR trên GPU
     from cuml.svm import SVC as cuSVC
     from cuml.neighbors import KNeighborsClassifier as cuKNN
     from cuml.naive_bayes import GaussianNB as cuGNB
@@ -116,6 +115,36 @@ class TorchMLPWrapper:
         return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
 
 
+class TorchMLPFactory:
+    """
+    Wrapper top-level (picklable) cho TorchMLPWrapper.
+    Lưu params dạng dict; tạo impl khi fit lần đầu.
+    """
+    def __init__(self, params: Optional[Dict] = None):
+        self.params = dict(params or {})
+        self.impl: Optional[TorchMLPWrapper] = None
+
+    def fit(self, X, y):
+        if self.impl is None:
+            self.impl = TorchMLPWrapper(
+                input_dim=X.shape[1],
+                hidden=self.params.get("hidden", (256, 128)),
+                dropout=self.params.get("dropout", 0.1),
+                lr=self.params.get("lr", 1e-3),
+                epochs=self.params.get("epochs", 20),
+                batch_size=self.params.get("batch_size", 256),
+                seed=self.params.get("seed", 42),
+            )
+        self.impl.fit(X, y)
+        return self
+
+    def predict_proba(self, X):
+        return self.impl.predict_proba(X)
+
+    def predict(self, X):
+        return self.impl.predict(X)
+
+
 def build_base(name: str, params: Optional[Dict] = None):
     """
     name ∈ {"knn","svm","xgb","nb","lr","mlp"} (không phân biệt hoa thường)
@@ -145,23 +174,7 @@ def build_base(name: str, params: Optional[Dict] = None):
     # ---- MLP ----
     if name in ("mlp", "mlp_torch"):
         if _HAS_TORCH:
-            class _Factory:
-                def __init__(self, p): self.p, self.impl = p, None
-                def fit(self, X, y):
-                    if self.impl is None:
-                        self.impl = TorchMLPWrapper(
-                            input_dim=X.shape[1],
-                            hidden=self.p.get("hidden", (256, 128)),
-                            dropout=self.p.get("dropout", 0.1),
-                            lr=self.p.get("lr", 1e-3),
-                            epochs=self.p.get("epochs", 20),
-                            batch_size=self.p.get("batch_size", 256),
-                            seed=self.p.get("seed", 42),
-                        )
-                    return self.impl.fit(X, y)
-                def predict_proba(self, X): return self.impl.predict_proba(X)
-                def predict(self, X): return self.impl.predict(X)
-            return _Factory(params)
+            return TorchMLPFactory(params)
         # fallback: sklearn (CPU)
         mlp = MLPClassifier(
             hidden_layer_sizes=params.get("hidden_layer_sizes", (256, 128)),
@@ -184,7 +197,7 @@ def build_base(name: str, params: Optional[Dict] = None):
 
         kernel = params.get("kernel", "linear")
         if kernel != "linear" or name == "svc":
-            # Dùng libsvm (ổn định hơn liblinear) + xác suất gốc, không cần calibrate
+            # libsvm + probability (không cần calibrate)
             svc = SVC(
                 kernel=kernel,
                 C=params.get("C", 1.0),
@@ -194,13 +207,13 @@ def build_base(name: str, params: Optional[Dict] = None):
             )
             return make_pipeline(_std(False), svc)
 
-        # Linear SVM (liblinear) + calibration
+        # Linear SVM (liblinear) + calibration để có prob
         base = LinearSVC(
             C=params.get("C", 1.0),
             class_weight=params.get("class_weight", "balanced"),
-            dual=params.get("dual", "auto"),  # auto tốt cho tỉ lệ n_samples/n_features
-            max_iter=params.get("max_iter", 20000),  # tăng lên cho chắc
-            tol=params.get("tol", 1e-3),  # nới tol giúp hội tụ dễ hơn
+            dual=params.get("dual", "auto"),
+            max_iter=params.get("max_iter", 20000),
+            tol=params.get("tol", 1e-3),
             loss="squared_hinge"
         )
         try:
@@ -249,24 +262,20 @@ def build_base(name: str, params: Optional[Dict] = None):
 
 def predict_proba(model, X: np.ndarray) -> np.ndarray:
     """Trả về p(y=1) dạng (N,) cho mọi model/pipeline/wrapper."""
-    # pipeline?
     clf = model[-1] if hasattr(model, "steps") else model
-
-    # PyTorch wrapper / factory
-    if isinstance(clf, TorchMLPWrapper) or hasattr(model, "impl"):
+    # Torch factory/wrapper
+    if isinstance(clf, TorchMLPFactory) or isinstance(clf, TorchMLPWrapper) or hasattr(model, "impl"):
         try:
             p = model.predict_proba(X)
         except Exception:
             p = model.impl.predict_proba(X)
         return p[:, 1].astype(np.float32) if p.ndim == 2 else p.astype(np.float32)
-
+    # sklearn
     if hasattr(model, "predict_proba"):
         p = model.predict_proba(X)
         return p[:, 1].astype(np.float32) if p.ndim == 2 else p.astype(np.float32)
-
     if hasattr(model, "decision_function"):
         z = model.decision_function(X).astype(np.float32).reshape(-1)
         return (1.0 / (1.0 + np.exp(-z))).astype(np.float32)
-
     yhat = model.predict(X).astype(np.float32).reshape(-1)
     return (0.01 + 0.98 * yhat).astype(np.float32)
