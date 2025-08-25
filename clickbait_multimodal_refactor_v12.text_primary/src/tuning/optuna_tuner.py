@@ -27,8 +27,21 @@ def _space(trial, name: str) -> Dict:
         return {"C": trial.suggest_float("C", 1e-3, 1e2, log=True),
                 "solver": trial.suggest_categorical("solver", ["liblinear","lbfgs"]),
                 "max_iter": 1000, "class_weight": "balanced", "n_jobs": -1}
-    if name in ("svm","svm_linear","svc"):
-        return {"C": trial.suggest_float("C", 1e-3, 1e2, log=True), "max_iter": 5000, "class_weight": "balanced"}
+    if name in ("svm", "svm_linear", "svc"):
+        kernel = trial.suggest_categorical("kernel", ["linear", "rbf"])
+        space = {
+            "C": trial.suggest_float("C", 1e-3, 10.0, log=True),  # hạ trần C để dễ hội tụ
+            "kernel": kernel,
+            "class_weight": "balanced",
+        }
+        if kernel == "linear":
+            space["max_iter"] = 20000
+            space["tol"] = trial.suggest_float("tol", 1e-5, 1e-2, log=True)
+            space["dual"] = "auto"
+        else:
+            # RBF dùng SVC(probability=True) (libsvm) — không cần calibrate, ổn định
+            space["gamma"] = trial.suggest_float("gamma", 1e-4, 10.0, log=True)
+        return space
     if name in ("knn",):
         return {"n_neighbors": trial.suggest_int("n_neighbors", 3, 101, step=2),
                 "weights": trial.suggest_categorical("weights", ["uniform","distance"]),
