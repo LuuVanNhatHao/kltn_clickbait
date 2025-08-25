@@ -51,19 +51,30 @@ models:
   base_learners: ["knn","svm","xgb","nb","lr","mlp"]
   stacking:
     enabled: true
-    meta: "logreg"         # meta-learner trên CPU (sklearn)
-  # (tuỳ chọn) nếu muốn đặt metric tune-threshold khác F1, thêm:
-  # threshold_metric: "f1"
+    meta: "xgb"         # dùng XGBoost làm meta-learner
+
+  ensemble:
+    bagging:
+      enabled: true
+      base: "lr"       # bagging trên LR (ổn định, nhanh)
+      n_estimators: 15
+      max_samples: 0.8
+      max_features: 1.0
+      bootstrap: true
+      random_state: 42
+  # metric để chọn ngưỡng trên dev
+  threshold_metric: "f1"
+  # Optuna: mục tiêu & số trials cho từng model (tùy chỉnh theo tài nguyên)
   optuna:
-    objective: "f1"
-    trials_default: 30      # trial mặc định cho mọi model
-    trials_per_learner:     # ghi đè theo từng model (tên phải đúng như base_learners)
-      svm: 8                # SVM tốn thời gian → để 8 trial thôi
-      knn: 25
-      xgb: 50               # XGB nên nhiều hơn
+    objective: "auc"
+    trials_default: 20
+    trials_per_learner:
+      svm: 8
+      knn: 15
+      xgb: 30
       mlp: 20
-      nb: 15
-      lr: 15
+      nb: 8
+      lr: 12
 
 fusion:
   primary: text            # text là chủ đạo; caption/image hỗ trợ

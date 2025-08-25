@@ -2,6 +2,7 @@
 import os, json, yaml, argparse, numpy as np, pandas as pd
 from pathlib import Path
 from sklearn.metrics import classification_report
+from sklearn.ensemble import BaggingClassifier
 from tqdm.auto import tqdm
 
 from src.models.stacking import StackingOOF
@@ -9,6 +10,7 @@ from src.tuning.optuna_tuner import tune_base, save_params
 from src.utils.metrics import compute_all, tune_threshold
 from src.utils.io import ensure_dir
 from src.utils.seed import set_seed
+from src.models.heads import build_base, predict_proba  # dùng lại build_base/predict_proba
 
 
 def load_feats(artifacts_dir, dataset_name, split):
@@ -50,7 +52,6 @@ def intersect_task_names(tasks_tr, tasks_dv, tasks_te):
 
 
 def _sanity_diag(tasks_tr: dict, tasks_dv: dict):
-    # chẩn đoán nhanh để phát hiện feature hằng (zero-variance)
     import numpy as np
     def diag(name, X):
         X = np.asarray(X)
@@ -63,15 +64,40 @@ def _sanity_diag(tasks_tr: dict, tasks_dv: dict):
         diag("DEV::" + nm, X)
 
 
+def _pack_split(y, prob, thr, threshold_metric):
+    if y is None or prob is None:
+        return None
+    pred = (prob >= thr).astype(int)
+    return {
+        "report": classification_report(y, pred, digits=4, output_dict=True),
+        "metrics": {**compute_all(y, prob, threshold=thr), "best_thr_metric": threshold_metric}
+    }
+
+
+def _eval_estimator(model, Xtr, ytr, Xdv, ydv, Xte, yte, threshold_metric):
+    model.fit(Xtr, ytr)
+    prob_tr = predict_proba(model, Xtr)
+    prob_dv = predict_proba(model, Xdv)
+    prob_te = predict_proba(model, Xte) if Xte is not None else None
+    thr, _ = tune_threshold(ydv, prob_dv, metric=threshold_metric)
+    return {
+        "train": _pack_split(ytr, prob_tr, thr, threshold_metric),
+        "dev":   _pack_split(ydv, prob_dv, thr, threshold_metric),
+        "test":  _pack_split(yte, prob_te, thr, threshold_metric),
+        "threshold": float(thr)
+    }
+
+
 def train_and_eval_single_task(
     Xtr, ytr, Xdv, ydv, Xte, yte, base_learners, meta_learner, cv_folds,
     threshold_metric="f1", do_optuna=False, optuna_trials=0, optuna_objective="auc",
-    outdir: Path | None = None, seed: int = 42, optuna_cfg: dict | None = None
+    outdir: Path | None = None, seed: int = 42, optuna_cfg: dict | None = None,
+    bag_cfg: dict | None = None
 ):
     if outdir is not None:
         ensure_dir(outdir)
 
-    # ===== NEW: cấu hình trials theo từng learner =====
+    # ===== Optuna: số trial riêng theo learner =====
     optuna_cfg = optuna_cfg or {}
     trials_default = int(optuna_cfg.get("trials_default", optuna_trials))
     trials_map = optuna_cfg.get("trials_per_learner", {}) or {}
@@ -97,36 +123,108 @@ def train_and_eval_single_task(
                 (outdir/"optuna").mkdir(parents=True, exist_ok=True)
                 save_params(str(outdir/"optuna"/f"{name}.json"), params)
 
-    model = StackingOOF(
-        base_names=base_learners,
-        base_params=base_params,
-        meta_learner=meta_learner,
-        cv_folds=cv_folds,
-        random_state=seed
-    )
-    model.fit(Xtr, ytr)
-
-    prob_tr = model.predict_proba(Xtr)
-    prob_dv = model.predict_proba(Xdv)
-    prob_te = model.predict_proba(Xte) if Xte is not None else None
-
-    thr, best = tune_threshold(ydv, prob_dv, metric=threshold_metric)
-
-    def pack(y, prob):
-        if y is None or prob is None: return None
-        pred = (prob >= thr).astype(int)
-        return {
-            "report": classification_report(y, pred, digits=4, output_dict=True),
-            "metrics": {**compute_all(y, prob, thr=thr), "best_thr_metric": threshold_metric}
+    # ===== 6 BASE LEARNERS (đánh giá riêng lẻ) =====
+    base_results = {}
+    for name in base_learners:
+        print(f"[Base] Training {name} ...")
+        mdl = build_base(name, base_params.get(name, {}))
+        r = _eval_estimator(mdl, Xtr, ytr, Xdv, ydv, Xte, yte, threshold_metric)
+        base_results[name] = {
+            "dev": r["dev"]["metrics"] if r["dev"] else None,
+            "test": r["test"]["metrics"] if r["test"] else None
         }
+        # Lưu preds base (dev/test)
+        if outdir is not None:
+            base_dir = outdir / "preds" / f"base_{name}"
+            ensure_dir(base_dir)
+            # re-fit to get probs again for saving
+            mdl.fit(Xtr, ytr)
+            prob_dv = predict_proba(mdl, Xdv)
+            pd.DataFrame({"prob": prob_dv}).to_csv(base_dir/"dev_prob.csv", index=False)
+            if Xte is not None:
+                prob_te = predict_proba(mdl, Xte)
+                pd.DataFrame({"prob": prob_te}).to_csv(base_dir/"test_prob.csv", index=False)
 
-    res = {"train": pack(ytr, prob_tr), "dev": pack(ydv, prob_dv), "test": pack(yte, prob_te), "threshold": float(thr)}
+    # ===== BAGGING =====
+    bag_cfg = bag_cfg or {}
+    bag_enabled = bag_cfg.get("enabled", True)
+    bag_base = bag_cfg.get("base", "lr")
+    bag_n = int(bag_cfg.get("n_estimators", 15))
+    bag_ms = float(bag_cfg.get("max_samples", 0.8))
+    bag_mf = float(bag_cfg.get("max_features", 1.0))
+    bag_boot = bool(bag_cfg.get("bootstrap", True))
+    bag_random = int(bag_cfg.get("random_state", seed))
 
+    bag_result = None
+    if bag_enabled:
+        print(f"[Bagging] base={bag_base}, n_estimators={bag_n}")
+        base_est = build_base(bag_base, base_params.get(bag_base, {}))
+        # sklearn>=1.4 dùng estimator=..., fallback base_estimator
+        try:
+            bag = BaggingClassifier(
+                estimator=base_est,
+                n_estimators=bag_n,
+                max_samples=bag_ms,
+                max_features=bag_mf,
+                bootstrap=bag_boot,
+                random_state=bag_random,
+                n_jobs=-1,
+            )
+        except TypeError:
+            bag = BaggingClassifier(
+                base_estimator=base_est,
+                n_estimators=bag_n,
+                max_samples=bag_ms,
+                max_features=bag_mf,
+                bootstrap=bag_boot,
+                random_state=bag_random,
+                n_jobs=-1,
+            )
+        bag_result = _eval_estimator(bag, Xtr, ytr, Xdv, ydv, Xte, yte, threshold_metric)
+
+    # ===== STACKING (OOF + meta=XGB/LR/LGBM) =====
+    stack = StackingOOF(base_learners, base_params=base_params,
+                        meta_learner=meta_learner, cv_folds=cv_folds,
+                        random_state=seed)
+    stack.fit(Xtr, ytr)
+    prob_tr = stack.predict_proba(Xtr)
+    prob_dv = stack.predict_proba(Xdv)
+    prob_te = stack.predict_proba(Xte) if Xte is not None else None
+    thr, _ = tune_threshold(ydv, prob_dv, metric=threshold_metric)
+
+    res_stacking = {
+        "train": _pack_split(ytr, prob_tr, thr, threshold_metric),
+        "dev":   _pack_split(ydv, prob_dv, thr, threshold_metric),
+        "test":  _pack_split(yte, prob_te, thr, threshold_metric),
+        "threshold": float(thr)
+    }
+
+    # ===== Đóng gói báo cáo theo format yêu cầu =====
+    res = {
+        # giữ compatibility cũ: các block default trỏ về stacking
+        "train": res_stacking["train"],
+        "dev":   res_stacking["dev"],
+        "test":  res_stacking["test"],
+        "threshold": res_stacking["threshold"],
+        "base_learners": base_results,
+        "bagging": {
+            "dev": bag_result["dev"]["metrics"] if (bag_result and bag_result["dev"]) else None,
+            "test": bag_result["test"]["metrics"] if (bag_result and bag_result["test"]) else None,
+            "threshold": bag_result["threshold"] if bag_result else None
+        },
+        "stacking": {
+            "dev": res_stacking["dev"]["metrics"] if res_stacking["dev"] else None,
+            "test": res_stacking["test"]["metrics"] if res_stacking["test"] else None,
+            "threshold": res_stacking["threshold"]
+        }
+    }
+
+    # ===== Lưu model stacking + dự đoán tập trung =====
     if outdir is not None:
         preds_dir, models_dir = outdir/"preds", outdir/"models"
         ensure_dir(preds_dir); ensure_dir(models_dir)
         import joblib
-        joblib.dump(model, models_dir/"stacking.joblib")
+        joblib.dump(stack, models_dir/"stacking.joblib")
         (models_dir/"best_threshold.txt").write_text(str(float(thr)), encoding="utf-8")
         pd.DataFrame({"prob": prob_dv, "pred": (prob_dv>=thr).astype(int), "label": ydv}).to_csv(preds_dir/"dev.csv", index=False)
         if prob_te is not None:
@@ -155,14 +253,15 @@ def main():
     seed = cfg.get('runtime', {}).get('seed', cfg.get('seed', 42))
     set_seed(seed)
 
-    # đọc optuna config trong YAML (có thể rỗng)
+    # Optuna config
     optuna_cfg = (cfg.get('models', {}).get('optuna', {}) or {})
-    # CLI objective ưu tiên hơn YAML nếu cung cấp
     if args.optuna_objective:
         optuna_cfg['objective'] = args.optuna_objective
-    # nếu CLI có --optuna_trials và YAML không đặt trials_default, dùng CLI làm mặc định
     if 'trials_default' not in optuna_cfg and args.optuna_trials:
         optuna_cfg['trials_default'] = args.optuna_trials
+
+    # Bagging config
+    bag_cfg = (cfg.get('models', {}).get('ensemble', {}).get('bagging', {}) or {})
 
     y_tr, feats_tr = load_feats(art, ds, 'train')
     y_dv, feats_dv = load_feats(art, ds, 'dev')
@@ -194,7 +293,7 @@ def main():
     ensure_dir(out_root)
 
     for t in tqdm(to_run, desc="Tasks"):
-        print(f"\n=== Running task: {t} ===")  # in rõ task đang chạy
+        print(f"\n=== Running task: {t} ===")
         Xtr, Xdv = tasks_tr[t], tasks_dv[t]
         Xte = tasks_te[t] if tasks_te is not None else None
         res = train_and_eval_single_task(
@@ -207,6 +306,7 @@ def main():
             outdir=out_root/t,
             seed=seed,
             optuna_cfg=optuna_cfg,
+            bag_cfg=bag_cfg,
         )
         results[t] = res
         with open(out_root/t/"metrics.json","w",encoding="utf-8") as f:

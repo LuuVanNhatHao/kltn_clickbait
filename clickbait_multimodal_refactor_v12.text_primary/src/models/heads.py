@@ -157,8 +157,10 @@ def build_base(name: str, params: Optional[Dict] = None):
     if name in ("xgb", "xgboost"):
         if not _HAS_XGB:
             raise RuntimeError("xgboost chưa được cài. Hãy `pip install xgboost`.")
+        device = "cuda" if _HAS_TORCH and torch.cuda.is_available() else "cpu"
         return XGBClassifier(
-            tree_method=params.get("tree_method", "gpu_hist"),
+            tree_method=params.get("tree_method", "hist"),
+            device=params.get("device", device),
             predictor=params.get("predictor", "gpu_predictor"),
             n_estimators=params.get("n_estimators", 500),
             max_depth=params.get("max_depth", 6),
