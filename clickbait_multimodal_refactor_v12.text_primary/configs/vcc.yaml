@@ -59,10 +59,10 @@ models:
     trials_default: 30      # trial mặc định cho mọi model
     trials_per_learner:     # ghi đè theo từng model (tên phải đúng như base_learners)
       svm: 8                # SVM tốn thời gian → để 8 trial thôi
-      knn: 15
+      knn: 25
       xgb: 50               # XGB nên nhiều hơn
       mlp: 20
-      nb: 10
+      nb: 15
       lr: 15
 
 fusion:
