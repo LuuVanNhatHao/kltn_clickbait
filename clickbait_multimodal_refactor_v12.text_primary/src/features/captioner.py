@@ -1,7 +1,7 @@
 from typing import List, Optional
 
 class Captioner:
-    def __init__(self, name="none", hf_model="Salesforce/blip2-flan-t5-xl", max_new_tokens=30):
+    def __init__(self, name="none", hf_model="Salesforce/blip2-flan-t5-xl-coco", max_new_tokens=30):
         self.name = name
         self.hf_model = hf_model
         self.max_new_tokens = max_new_tokens
