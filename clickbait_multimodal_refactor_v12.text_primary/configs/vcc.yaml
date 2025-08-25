@@ -54,9 +54,8 @@ models:
     meta: "logreg"         # meta-learner trên CPU (sklearn)
   # (tuỳ chọn) nếu muốn đặt metric tune-threshold khác F1, thêm:
   # threshold_metric: "f1"
- # mới thêm:
   optuna:
-    objective: "auc"        # hoặc "f1"
+    objective: "f1"
     trials_default: 30      # trial mặc định cho mọi model
     trials_per_learner:     # ghi đè theo từng model (tên phải đúng như base_learners)
       svm: 8                # SVM tốn thời gian → để 8 trial thôi
