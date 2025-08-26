@@ -2,7 +2,6 @@
 import os, json, yaml, argparse, numpy as np, pandas as pd
 from pathlib import Path
 from sklearn.metrics import classification_report
-from sklearn.ensemble import BaggingClassifier
 from tqdm.auto import tqdm
 
 from src.models.stacking import StackingOOF
@@ -84,15 +83,31 @@ def _eval_estimator(model, Xtr, ytr, Xdv, ydv, Xte, yte, threshold_metric):
         "train": _pack_split(ytr, prob_tr, thr, threshold_metric),
         "dev":   _pack_split(ydv, prob_dv, thr, threshold_metric),
         "test":  _pack_split(yte, prob_te, thr, threshold_metric),
-        "threshold": float(thr)
+        "threshold": float(thr),
+        "probs": {"train": prob_tr, "dev": prob_dv, "test": prob_te}
     }
+
+
+# ---------- Voting helpers ----------
+def _normalize_weights(names, weights_dict=None):
+    """Trả về vector trọng số (cùng thứ tự với names). Nếu không chỉ định → đều nhau."""
+    if not weights_dict:
+        return np.ones(len(names), dtype=np.float32) / max(len(names), 1)
+    w = np.array([float(weights_dict.get(n, 0.0)) for n in names], dtype=np.float32)
+    if w.sum() <= 0:
+        w = np.ones(len(names), dtype=np.float32)
+    return w / w.sum()
+
+def _soft_vote(prob_list, weights):
+    P = np.vstack(prob_list)  # [M, N]
+    return (weights[:, None] * P).sum(axis=0)  # [N]
 
 
 def train_and_eval_single_task(
     Xtr, ytr, Xdv, ydv, Xte, yte, base_learners, meta_learner, cv_folds,
     threshold_metric="f1", do_optuna=False, optuna_trials=0, optuna_objective="auc",
     outdir: Path | None = None, seed: int = 42, optuna_cfg: dict | None = None,
-    bag_cfg: dict | None = None
+    voting_cfg: dict | None = None
 ):
     if outdir is not None:
         ensure_dir(outdir)
@@ -123,8 +138,8 @@ def train_and_eval_single_task(
                 (outdir/"optuna").mkdir(parents=True, exist_ok=True)
                 save_params(str(outdir/"optuna"/f"{name}.json"), params)
 
-    # ===== 6 BASE LEARNERS (đánh giá riêng lẻ) =====
-    base_results = {}
+    # ===== 6 BASE LEARNERS (đánh giá riêng lẻ & lưu xác suất cho Voting) =====
+    base_results, base_probs_dev, base_probs_test, base_probs_train = {}, {}, {}, {}
     for name in base_learners:
         print(f"[Base] Training {name} ...")
         mdl = build_base(name, base_params.get(name, {}))
@@ -133,56 +148,65 @@ def train_and_eval_single_task(
             "dev": r["dev"]["metrics"] if r["dev"] else None,
             "test": r["test"]["metrics"] if r["test"] else None
         }
+        base_probs_train[name] = r["probs"]["train"]
+        base_probs_dev[name]   = r["probs"]["dev"]
+        base_probs_test[name]  = r["probs"]["test"]
+
         # Lưu preds base (dev/test)
         if outdir is not None:
             base_dir = outdir / "preds" / f"base_{name}"
             ensure_dir(base_dir)
-            # re-fit to get probs again for saving
-            mdl.fit(Xtr, ytr)
-            prob_dv = predict_proba(mdl, Xdv)
-            pd.DataFrame({"prob": prob_dv}).to_csv(base_dir/"dev_prob.csv", index=False)
-            if Xte is not None:
-                prob_te = predict_proba(mdl, Xte)
-                pd.DataFrame({"prob": prob_te}).to_csv(base_dir/"test_prob.csv", index=False)
+            pd.DataFrame({"prob": r["probs"]["dev"]}).to_csv(base_dir/"dev_prob.csv", index=False)
+            if r["probs"]["test"] is not None:
+                pd.DataFrame({"prob": r["probs"]["test"]}).to_csv(base_dir/"test_prob.csv", index=False)
 
-    # ===== BAGGING =====
-    bag_cfg = bag_cfg or {}
-    bag_enabled = bag_cfg.get("enabled", True)
-    bag_base = bag_cfg.get("base", "lr")
-    bag_n = int(bag_cfg.get("n_estimators", 15))
-    bag_ms = float(bag_cfg.get("max_samples", 0.8))
-    bag_mf = float(bag_cfg.get("max_features", 1.0))
-    bag_boot = bool(bag_cfg.get("bootstrap", True))
-    bag_random = int(bag_cfg.get("random_state", seed))
+    # ===== VOTING (soft / weighted) =====
+    voting_cfg = voting_cfg or {}
+    vote_enabled = bool(voting_cfg.get("enabled", True))
+    vote_weights = voting_cfg.get("weights", None)  # dict: {learner: weight}
+    voting_result = None
 
-    bag_result = None
-    if bag_enabled:
-        print(f"[Bagging] base={bag_base}, n_estimators={bag_n}")
-        base_est = build_base(bag_base, base_params.get(bag_base, {}))
-        # sklearn>=1.4 dùng estimator=..., fallback base_estimator
-        try:
-            bag = BaggingClassifier(
-                estimator=base_est,
-                n_estimators=bag_n,
-                max_samples=bag_ms,
-                max_features=bag_mf,
-                bootstrap=bag_boot,
-                random_state=bag_random,
-                n_jobs=-1,
-            )
-        except TypeError:
-            bag = BaggingClassifier(
-                base_estimator=base_est,
-                n_estimators=bag_n,
-                max_samples=bag_ms,
-                max_features=bag_mf,
-                bootstrap=bag_boot,
-                random_state=bag_random,
-                n_jobs=-1,
-            )
-        bag_result = _eval_estimator(bag, Xtr, ytr, Xdv, ydv, Xte, yte, threshold_metric)
+    if vote_enabled:
+        # chỉ dùng các base có xác suất hợp lệ trên DEV
+        names = [n for n in base_learners if n in base_probs_dev and base_probs_dev[n] is not None]
+        if not names:
+            print("[Voting] No base probabilities available; skipping.")
+        else:
+            w = _normalize_weights(names, vote_weights)
+            dv_probs = _soft_vote([base_probs_dev[n] for n in names], w)
+            te_probs = None
+            if any(base_probs_test.get(n) is None for n in names):
+                te_probs = None
+            else:
+                te_probs = _soft_vote([base_probs_test[n] for n in names], w)
 
-    # ===== STACKING (OOF + meta=XGB/LR/LGBM) =====
+            thr_v, _ = tune_threshold(ydv, dv_probs, metric=threshold_metric)
+            voting_result = {
+                "train": None,  # không cần cho voting
+                "dev":   _pack_split(ydv, dv_probs, thr_v, threshold_metric),
+                "test":  _pack_split(yte, te_probs, thr_v, threshold_metric),
+                "threshold": float(thr_v),
+                "weights": {n: float(wi) for n, wi in zip(names, w.tolist())}
+            }
+
+            # lưu dự đoán voting
+            if outdir is not None:
+                preds_dir, models_dir = outdir/"preds", outdir/"models"
+                ensure_dir(preds_dir); ensure_dir(models_dir)
+                pd.DataFrame({"prob": dv_probs,
+                              "pred": (dv_probs>=thr_v).astype(int),
+                              "label": ydv}).to_csv(preds_dir/"voting_dev.csv", index=False)
+                if te_probs is not None:
+                    d = {"prob": te_probs, "pred": (te_probs>=thr_v).astype(int)}
+                    if yte is not None: d["label"] = yte
+                    pd.DataFrame(d).to_csv(preds_dir/"voting_test.csv", index=False)
+                (models_dir/"voting_weights.json").write_text(
+                    json.dumps(voting_result["weights"], ensure_ascii=False, indent=2),
+                    encoding="utf-8"
+                )
+                (models_dir/"voting_best_threshold.txt").write_text(str(float(thr_v)), encoding="utf-8")
+
+    # ===== STACKING (OOF + meta=XGB/LR/…) =====
     stack = StackingOOF(base_learners, base_params=base_params,
                         meta_learner=meta_learner, cv_folds=cv_folds,
                         random_state=seed)
@@ -207,10 +231,11 @@ def train_and_eval_single_task(
         "test":  res_stacking["test"],
         "threshold": res_stacking["threshold"],
         "base_learners": base_results,
-        "bagging": {
-            "dev": bag_result["dev"]["metrics"] if (bag_result and bag_result["dev"]) else None,
-            "test": bag_result["test"]["metrics"] if (bag_result and bag_result["test"]) else None,
-            "threshold": bag_result["threshold"] if bag_result else None
+        "voting": {
+            "dev": voting_result["dev"]["metrics"] if (voting_result and voting_result["dev"]) else None,
+            "test": voting_result["test"]["metrics"] if (voting_result and voting_result["test"]) else None,
+            "threshold": voting_result["threshold"] if voting_result else None,
+            "weights": voting_result["weights"] if voting_result else None
         },
         "stacking": {
             "dev": res_stacking["dev"]["metrics"] if res_stacking["dev"] else None,
@@ -260,8 +285,8 @@ def main():
     if 'trials_default' not in optuna_cfg and args.optuna_trials:
         optuna_cfg['trials_default'] = args.optuna_trials
 
-    # Bagging config
-    bag_cfg = (cfg.get('models', {}).get('ensemble', {}).get('bagging', {}) or {})
+    # Voting config
+    voting_cfg = (cfg.get('models', {}).get('ensemble', {}).get('voting', {}) or {})
 
     y_tr, feats_tr = load_feats(art, ds, 'train')
     y_dv, feats_dv = load_feats(art, ds, 'dev')
@@ -306,7 +331,7 @@ def main():
             outdir=out_root/t,
             seed=seed,
             optuna_cfg=optuna_cfg,
-            bag_cfg=bag_cfg,
+            voting_cfg=voting_cfg,
         )
         results[t] = res
         with open(out_root/t/"metrics.json","w",encoding="utf-8") as f:
